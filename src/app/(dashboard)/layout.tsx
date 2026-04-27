@@ -17,6 +17,7 @@ import {
   Sun,
   ChevronRight,
   Users,
+  Terminal,
 } from 'lucide-react';
 import { UserButton } from '@clerk/nextjs';
 import { useTheme } from '@/components/ThemeProvider';
@@ -29,6 +30,7 @@ const navItems = [
   { href: '/feed', label: 'Feed', icon: MessageSquare },
   { href: '/memory', label: 'Memory', icon: Brain },
   { href: '/workspace', label: 'Workspace', icon: Users },
+  { href: '/logs', label: 'Logs', icon: Terminal },
   { href: '/api-config', label: 'API Config', icon: Plug },
   { href: '/settings', label: 'Settings', icon: Settings },
   { href: '/help', label: 'Help', icon: HelpCircle },
