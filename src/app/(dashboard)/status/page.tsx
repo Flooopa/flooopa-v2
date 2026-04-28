@@ -148,9 +148,19 @@ function formatDuration(seconds: number) {
   return `${hrs}h ${mins}m ${secs}s`;
 }
 
-function StatusBadge({ status, latency }: { status: string; latency?: number }) {
+function StatusBadge({ status, latency, neutral }: { status: string; latency?: number; neutral?: boolean }) {
   const isOk = status === 'connected' || status === 'running' || status === 'healthy' || status === 'ok';
   const isWarn = status === 'error' || status === 'idle' || status === 'degraded';
+  if (neutral) {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="relative flex h-2 w-2 rounded-full bg-slate-300" />
+        <Badge variant="outline" className="text-xs text-slate-500 border-slate-200 bg-slate-50">
+          Not available
+        </Badge>
+      </div>
+    );
+  }
   return (
     <div className="flex items-center gap-2">
       {isOk ? (
@@ -209,6 +219,7 @@ function ServiceCard({
   onTest,
   testing,
   latencyHistory,
+  optional = false,
 }: {
   icon: React.ElementType;
   title: string;
@@ -221,17 +232,23 @@ function ServiceCard({
   onTest?: () => void;
   testing?: boolean;
   latencyHistory?: number[];
+  optional?: boolean;
 }) {
   const [showError, setShowError] = useState(false);
   const isOk = status === 'connected' || status === 'running' || status === 'healthy' || status === 'ok';
+  const isNeutral = optional && !isOk;
+
+  const borderColor = isOk ? 'border-l-emerald-500' : isNeutral ? 'border-l-slate-300' : 'border-l-red-500';
+  const iconBg = isOk ? 'bg-emerald-50' : isNeutral ? 'bg-slate-100' : 'bg-red-50';
+  const iconColor = isOk ? 'text-emerald-600' : isNeutral ? 'text-slate-400' : 'text-red-600';
 
   return (
-    <Card className={cn('border-l-4', isOk ? 'border-l-emerald-500' : 'border-l-red-500')}>
+    <Card className={cn('border-l-4', borderColor)}>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className={cn('p-1.5 rounded-md', isOk ? 'bg-emerald-50' : 'bg-red-50')}>
-              <Icon className={cn('w-4 h-4', isOk ? 'text-emerald-600' : 'text-red-600')} />
+            <div className={cn('p-1.5 rounded-md', iconBg)}>
+              <Icon className={cn('w-4 h-4', iconColor)} />
             </div>
             <div>
               <h3 className="font-medium text-sm">{title}</h3>
@@ -239,7 +256,7 @@ function ServiceCard({
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <StatusBadge status={status} latency={latency} />
+            <StatusBadge status={status} latency={latency} neutral={optional && !isOk} />
             {onTest && (
               <Button
                 variant="ghost"
@@ -257,7 +274,7 @@ function ServiceCard({
       </CardHeader>
       <CardContent className="pt-0 space-y-2">
         {latencyHistory && latencyHistory.length > 1 && (
-          <LatencySparkline values={latencyHistory} color={isOk ? 'bg-emerald-400' : 'bg-red-400'} />
+          <LatencySparkline values={latencyHistory} color={isOk ? 'bg-emerald-400' : isNeutral ? 'bg-slate-300' : 'bg-red-400'} />
         )}
         {details && (
           <div className="grid grid-cols-2 gap-2">
@@ -270,7 +287,7 @@ function ServiceCard({
           </div>
         )}
         {children}
-        {error && (
+        {error && !optional && (
           <div>
             <button
               onClick={() => setShowError(!showError)}
@@ -558,9 +575,15 @@ export default function StatusPage() {
         </div>
       </div>
 
-      {/* MCP Server */}
+      {/* Local Development — only available when running services locally */}
       <div>
-        <h2 className="text-sm font-medium text-muted-foreground mb-3 uppercase tracking-wider">MCP Server</h2>
+        <div className="flex items-center gap-2 mb-3">
+          <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Local Development</h2>
+          <Badge variant="outline" className="text-[10px] text-slate-500 border-slate-200">Optional</Badge>
+        </div>
+        <p className="text-xs text-muted-foreground mb-3">
+          These services only run on your local machine. They are not required for the web app.
+        </p>
         <div className="grid gap-4 md:grid-cols-2">
           <ServiceCard
             icon={Plug}
@@ -568,6 +591,7 @@ export default function StatusPage() {
             subtitle="Studio Connection"
             status={status.mcp.status}
             latency={status.mcp.latencyMs}
+            optional
             details={[
               { label: 'Transport', value: status.mcp.transport ?? '—' },
               { label: 'Tools', value: status.mcp.toolCount ?? '—' },
@@ -602,6 +626,7 @@ export default function StatusPage() {
             subtitle="Roblox Indexer Service"
             status={status.indexer.status}
             latency={status.indexer.latencyMs}
+            optional
             details={[
               { label: 'MCP', value: status.indexer.mcpConnected === true ? 'Connected' : status.indexer.mcpConnected === false ? 'Disconnected' : '—' },
               { label: 'Ollama', value: status.indexer.ollamaAvailable === true ? 'Ready' : status.indexer.ollamaAvailable === false ? 'Down' : '—' },
@@ -613,9 +638,11 @@ export default function StatusPage() {
         </div>
       </div>
 
-      {/* Local Models */}
       <div>
-        <h2 className="text-sm font-medium text-muted-foreground mb-3 uppercase tracking-wider">Local Models</h2>
+        <div className="flex items-center gap-2 mb-3">
+          <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Local Models</h2>
+          <Badge variant="outline" className="text-[10px] text-slate-500 border-slate-200">Optional</Badge>
+        </div>
         <div className="grid gap-4 md:grid-cols-2">
           <ServiceCard
             icon={Cpu}
@@ -623,6 +650,7 @@ export default function StatusPage() {
             subtitle={status.ollama.targetModel ?? 'Local AI'}
             status={status.ollama.status}
             latency={status.ollama.latencyMs}
+            optional
             details={[
               { label: 'Installed', value: status.ollama.modelCount ?? '—' },
               { label: 'Loaded', value: status.ollama.loadedCount ?? '—' },
