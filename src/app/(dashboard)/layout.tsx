@@ -19,6 +19,7 @@ import {
   Users,
   Terminal,
   Database,
+  Activity,
 } from 'lucide-react';
 import { UserButton } from '@clerk/nextjs';
 import { useTheme } from '@/components/ThemeProvider';
@@ -31,6 +32,7 @@ const navItems = [
   { href: '/feed', label: 'Feed', icon: MessageSquare },
   { href: '/memory', label: 'Memory', icon: Brain },
   { href: '/context', label: 'Context', icon: Database },
+  { href: '/status', label: 'Status', icon: Activity },
   { href: '/workspace', label: 'Workspace', icon: Users },
   { href: '/logs', label: 'Logs', icon: Terminal },
   { href: '/api-config', label: 'API Config', icon: Plug },
