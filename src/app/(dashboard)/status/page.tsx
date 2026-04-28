@@ -22,6 +22,10 @@ import {
   Play,
   History,
   BarChart3,
+  Plug,
+  Layers,
+  MemoryStick,
+  Package,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -56,21 +60,46 @@ interface SystemStatus {
   ollama: {
     status: string;
     latencyMs: number;
-    models?: string[];
+    url?: string;
+    targetModel?: string;
+    targetInstalled?: boolean;
+    targetLoaded?: boolean;
+    installedModels?: Array<{
+      name: string;
+      model: string;
+      size: number;
+      parameterSize?: string;
+      quantization?: string;
+      family?: string;
+      format?: string;
+    }>;
+    loadedModels?: Array<{
+      name: string;
+      model: string;
+      size: number;
+      sizeVram?: number;
+    }>;
     modelCount?: number;
+    loadedCount?: number;
     error?: string;
   };
   indexer: {
     status: string;
     latencyMs: number;
     httpStatus?: number;
+    ollamaAvailable?: boolean;
+    mcpConnected?: boolean;
     error?: string;
   };
   mcp: {
     status: string;
     latencyMs: number;
-    scriptCount?: number;
-    gameName?: string;
+    connectedAt?: string;
+    disconnectedAt?: string;
+    transport?: string;
+    command?: string;
+    tools?: Array<{ name: string; description?: string }>;
+    toolCount?: number;
     error?: string;
   };
   backend: {
@@ -529,30 +558,41 @@ export default function StatusPage() {
         </div>
       </div>
 
-      {/* Local Infrastructure */}
+      {/* MCP Server */}
       <div>
-        <h2 className="text-sm font-medium text-muted-foreground mb-3 uppercase tracking-wider">Local Infrastructure</h2>
-        <div className="grid gap-4 md:grid-cols-3">
+        <h2 className="text-sm font-medium text-muted-foreground mb-3 uppercase tracking-wider">MCP Server</h2>
+        <div className="grid gap-4 md:grid-cols-2">
           <ServiceCard
-            icon={Cpu}
-            title="Ollama"
-            subtitle="Local AI"
-            status={status.ollama.status}
-            latency={status.ollama.latencyMs}
+            icon={Plug}
+            title="Roblox MCP"
+            subtitle="Studio Connection"
+            status={status.mcp.status}
+            latency={status.mcp.latencyMs}
             details={[
-              { label: 'Models', value: status.ollama.modelCount ?? '—' },
+              { label: 'Transport', value: status.mcp.transport ?? '—' },
+              { label: 'Tools', value: status.mcp.toolCount ?? '—' },
+              ...(status.mcp.connectedAt ? [{ label: 'Connected', value: new Date(status.mcp.connectedAt).toLocaleTimeString() }] : []),
             ]}
-            error={status.ollama.error}
-            onTest={() => testService('ollama')}
-            testing={testingService === 'ollama'}
+            error={status.mcp.error}
+            onTest={() => testService('mcp')}
+            testing={testingService === 'mcp'}
           >
-            {status.ollama.models && status.ollama.models.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {status.ollama.models.map((m) => (
-                  <Badge key={m} variant="outline" className="text-xs">
-                    {m}
-                  </Badge>
-                ))}
+            {status.mcp.tools && status.mcp.tools.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Available Tools</p>
+                <div className="flex flex-wrap gap-1">
+                  {status.mcp.tools.map((t) => (
+                    <Badge key={t.name} variant="outline" className="text-xs" title={t.description}>
+                      {t.name}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+            {status.mcp.command && (
+              <div className="bg-muted/40 rounded-md px-2 py-1">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Command</p>
+                <p className="text-xs font-mono truncate">{status.mcp.command}</p>
               </div>
             )}
           </ServiceCard>
@@ -562,24 +602,108 @@ export default function StatusPage() {
             subtitle="Roblox Indexer Service"
             status={status.indexer.status}
             latency={status.indexer.latencyMs}
+            details={[
+              { label: 'MCP', value: status.indexer.mcpConnected === true ? 'Connected' : status.indexer.mcpConnected === false ? 'Disconnected' : '—' },
+              { label: 'Ollama', value: status.indexer.ollamaAvailable === true ? 'Ready' : status.indexer.ollamaAvailable === false ? 'Down' : '—' },
+            ]}
             error={status.indexer.error}
             onTest={() => testService('indexer')}
             testing={testingService === 'indexer'}
           />
+        </div>
+      </div>
+
+      {/* Local Models */}
+      <div>
+        <h2 className="text-sm font-medium text-muted-foreground mb-3 uppercase tracking-wider">Local Models</h2>
+        <div className="grid gap-4 md:grid-cols-2">
           <ServiceCard
-            icon={Gamepad2}
-            title="Roblox MCP"
-            subtitle="Studio Connection"
-            status={status.mcp.status}
-            latency={status.mcp.latencyMs}
+            icon={Cpu}
+            title="Ollama"
+            subtitle={status.ollama.targetModel ?? 'Local AI'}
+            status={status.ollama.status}
+            latency={status.ollama.latencyMs}
             details={[
-              { label: 'Game', value: status.mcp.gameName ?? '—' },
-              { label: 'Scripts', value: status.mcp.scriptCount ?? '—' },
+              { label: 'Installed', value: status.ollama.modelCount ?? '—' },
+              { label: 'Loaded', value: status.ollama.loadedCount ?? '—' },
+              { label: 'Target', value: status.ollama.targetInstalled ? 'Installed' : 'Missing' },
+              ...(status.ollama.targetLoaded !== undefined ? [{ label: 'In VRAM', value: status.ollama.targetLoaded ? 'Yes' : 'No' }] : []),
             ]}
-            error={status.mcp.error}
-            onTest={() => testService('mcp')}
-            testing={testingService === 'mcp'}
-          />
+            error={status.ollama.error}
+            onTest={() => testService('ollama')}
+            testing={testingService === 'ollama'}
+          >
+            {status.ollama.installedModels && status.ollama.installedModels.length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Installed Models</p>
+                <div className="space-y-1">
+                  {status.ollama.installedModels.map((m) => (
+                    <div key={m.name} className="flex items-center justify-between bg-muted/40 rounded-md px-2 py-1">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Package className="w-3 h-3 text-muted-foreground shrink-0" />
+                        <span className="text-xs font-mono truncate">{m.name}</span>
+                        {status.ollama.targetModel === m.name && (
+                          <Badge variant="outline" className="text-[10px] text-primary border-primary/30 shrink-0">Target</Badge>
+                        )}
+                        {status.ollama.loadedModels?.some((lm) => lm.name === m.name) && (
+                          <Badge variant="outline" className="text-[10px] text-emerald-600 border-emerald-200 shrink-0">Loaded</Badge>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {m.parameterSize && <span className="text-[10px] text-muted-foreground">{m.parameterSize}</span>}
+                        {m.quantization && <span className="text-[10px] text-muted-foreground">{m.quantization}</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </ServiceCard>
+          <Card className="p-4 space-y-4">
+            <div className="flex items-center gap-2">
+              <MemoryStick className="w-4 h-4 text-muted-foreground" />
+              <p className="text-sm font-medium">Model Details</p>
+            </div>
+            {status.ollama.installedModels && status.ollama.installedModels.length > 0 ? (
+              <div className="space-y-3">
+                {status.ollama.installedModels.map((m) => (
+                  <div key={m.name} className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono">{m.name}</span>
+                      <span className="text-xs text-muted-foreground">{(m.size / 1024 / 1024 / 1024).toFixed(2)} GB</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-[10px] text-muted-foreground">
+                      <div className="bg-muted/40 rounded px-2 py-1">
+                        <span className="uppercase tracking-wider">Family</span>
+                        <p className="text-foreground">{m.family ?? '—'}</p>
+                      </div>
+                      <div className="bg-muted/40 rounded px-2 py-1">
+                        <span className="uppercase tracking-wider">Format</span>
+                        <p className="text-foreground">{m.format ?? '—'}</p>
+                      </div>
+                      <div className="bg-muted/40 rounded px-2 py-1">
+                        <span className="uppercase tracking-wider">Quant</span>
+                        <p className="text-foreground">{m.quantization ?? '—'}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">No models installed</p>
+            )}
+            {status.ollama.loadedModels && status.ollama.loadedModels.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Currently Loaded</p>
+                {status.ollama.loadedModels.map((m) => (
+                  <div key={m.name} className="flex items-center justify-between bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 rounded-md px-2 py-1">
+                    <span className="text-xs font-mono">{m.name}</span>
+                    <span className="text-xs text-emerald-600">{(m.sizeVram ? m.sizeVram / 1024 / 1024 / 1024 : m.size / 1024 / 1024 / 1024).toFixed(2)} GB VRAM</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
         </div>
       </div>
 
