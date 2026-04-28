@@ -20,10 +20,16 @@ import {
   Terminal,
   Database,
   Activity,
+  WifiOff,
+  AlertTriangle,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { UserButton } from '@clerk/nextjs';
 import { useTheme } from '@/components/ThemeProvider';
 import { RealtimeProvider } from '@/components/RealtimeProvider';
+import { useConnection } from '@/hooks/useConnection';
+import { useSound } from '@/hooks/useSound';
 import { cn } from '@/lib/utils';
 
 const navItems = [
@@ -40,6 +46,45 @@ const navItems = [
   { href: '/help', label: 'Help', icon: HelpCircle },
 ];
 
+function ConnectionDot() {
+  const { state, latency, isOnline } = useConnection();
+
+  const color =
+    state === 'connected'
+      ? 'bg-emerald-500'
+      : state === 'degraded'
+      ? 'bg-amber-500'
+      : 'bg-red-500';
+
+  const pingColor =
+    state === 'connected'
+      ? 'bg-emerald-400'
+      : state === 'degraded'
+      ? 'bg-amber-400'
+      : 'bg-red-400';
+
+  const label = !isOnline
+    ? 'Offline'
+    : state === 'connected'
+    ? `${latency}ms`
+    : state === 'degraded'
+    ? 'Slow'
+    : 'Down';
+
+  return (
+    <div className="flex items-center gap-2 text-xs text-muted-foreground" title={`Backend: ${state} (${latency}ms)`}>
+      <span className="relative flex h-2 w-2">
+        {state === 'connected' && (
+          <span className={cn('animate-ping absolute inline-flex h-full w-full rounded-full opacity-75', pingColor)} />
+        )}
+        <span className={cn('relative inline-flex rounded-full h-2 w-2', color)} />
+      </span>
+      <span className="hidden sm:inline">{label}</span>
+      {!isOnline && <WifiOff className="w-3 h-3 text-red-500" />}
+    </div>
+  );
+}
+
 export default function DashboardLayout({
   children,
 }: {
@@ -48,6 +93,7 @@ export default function DashboardLayout({
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { theme, toggleTheme } = useTheme();
+  const { enabled: soundEnabled, toggle: toggleSound } = useSound();
 
   const activeItem = navItems.find((item) => item.href === pathname);
 
@@ -114,6 +160,14 @@ export default function DashboardLayout({
         {/* Bottom actions */}
         <div className="p-3 border-t border-border space-y-1">
           <button
+            onClick={toggleSound}
+            className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 w-full transition-colors"
+            title="Toggle sound notifications"
+          >
+            {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+            Sound {soundEnabled ? 'On' : 'Off'}
+          </button>
+          <button
             onClick={toggleTheme}
             className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 w-full transition-colors"
           >
@@ -152,13 +206,7 @@ export default function DashboardLayout({
           <div className="flex-1" />
 
           {/* Connection status */}
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
-            </span>
-            Live
-          </div>
+          <ConnectionDot />
         </header>
 
         {/* Page content */}

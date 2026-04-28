@@ -19,6 +19,9 @@ import {
   ChevronDown,
   ChevronUp,
   Terminal,
+  Play,
+  History,
+  BarChart3,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -26,6 +29,7 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
+import { useConnection } from '@/hooks/useConnection';
 
 interface SystemStatus {
   timestamp: string;
@@ -96,6 +100,16 @@ interface SystemStatus {
   };
 }
 
+interface CheckHistoryItem {
+  time: string;
+  overall: string;
+  kimi: string;
+  claude: string;
+  ollama: string;
+  indexer: string;
+  mcp: string;
+}
+
 const BACKEND_URL = process.env.NEXT_PUBLIC_AI_GATEWAY_URL || '';
 
 function formatDuration(seconds: number) {
@@ -106,7 +120,7 @@ function formatDuration(seconds: number) {
 }
 
 function StatusBadge({ status, latency }: { status: string; latency?: number }) {
-  const isOk = status === 'connected' || status === 'running' || status === 'healthy';
+  const isOk = status === 'connected' || status === 'running' || status === 'healthy' || status === 'ok';
   const isWarn = status === 'error' || status === 'idle' || status === 'degraded';
   return (
     <div className="flex items-center gap-2">
@@ -133,6 +147,27 @@ function StatusBadge({ status, latency }: { status: string; latency?: number }) 
   );
 }
 
+function LatencySparkline({ values, color }: { values: number[]; color: string }) {
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values, 0);
+  const range = max - min || 1;
+  return (
+    <div className="flex items-end gap-[2px] h-8">
+      {values.map((v, i) => {
+        const pct = ((v - min) / range) * 100;
+        return (
+          <div
+            key={i}
+            className={cn('w-1.5 rounded-sm opacity-70', color)}
+            style={{ height: `${Math.max(8, pct)}%` }}
+            title={`${Math.round(v)}ms`}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 function ServiceCard({
   icon: Icon,
   title,
@@ -142,6 +177,9 @@ function ServiceCard({
   details,
   error,
   children,
+  onTest,
+  testing,
+  latencyHistory,
 }: {
   icon: React.ElementType;
   title: string;
@@ -151,9 +189,12 @@ function ServiceCard({
   details?: { label: string; value: string | number }[];
   error?: string;
   children?: React.ReactNode;
+  onTest?: () => void;
+  testing?: boolean;
+  latencyHistory?: number[];
 }) {
   const [showError, setShowError] = useState(false);
-  const isOk = status === 'connected' || status === 'running' || status === 'healthy';
+  const isOk = status === 'connected' || status === 'running' || status === 'healthy' || status === 'ok';
 
   return (
     <Card className={cn('border-l-4', isOk ? 'border-l-emerald-500' : 'border-l-red-500')}>
@@ -168,10 +209,27 @@ function ServiceCard({
               {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
             </div>
           </div>
-          <StatusBadge status={status} latency={latency} />
+          <div className="flex items-center gap-2">
+            <StatusBadge status={status} latency={latency} />
+            {onTest && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={onTest}
+                disabled={testing}
+              >
+                {testing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                {testing ? 'Testing...' : 'Test'}
+              </Button>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="pt-0 space-y-2">
+        {latencyHistory && latencyHistory.length > 1 && (
+          <LatencySparkline values={latencyHistory} color={isOk ? 'bg-emerald-400' : 'bg-red-400'} />
+        )}
         {details && (
           <div className="grid grid-cols-2 gap-2">
             {details.map((d) => (
@@ -209,6 +267,30 @@ export default function StatusPage() {
   const [loading, setLoading] = useState(true);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [testingService, setTestingService] = useState<string | null>(null);
+  const [checkHistory, setCheckHistory] = useState<CheckHistoryItem[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try { return JSON.parse(localStorage.getItem('ai-status-history') || '[]'); } catch { return []; }
+  });
+  const [showHistory, setShowHistory] = useState(false);
+  const { history: connHistory } = useConnection();
+
+  const recordHistory = useCallback((data: SystemStatus) => {
+    const item: CheckHistoryItem = {
+      time: new Date().toISOString(),
+      overall: data.overall,
+      kimi: data.kimi.status,
+      claude: data.claude.status,
+      ollama: data.ollama.status,
+      indexer: data.indexer.status,
+      mcp: data.mcp.status,
+    };
+    setCheckHistory((prev) => {
+      const next = [item, ...prev].slice(0, 50);
+      localStorage.setItem('ai-status-history', JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -217,12 +299,13 @@ export default function StatusPage() {
       const data = await res.json();
       setStatus(data);
       setLastChecked(new Date());
+      recordHistory(data);
     } catch {
       toast.error('Failed to fetch system status');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [recordHistory]);
 
   useEffect(() => {
     fetchStatus();
@@ -230,6 +313,32 @@ export default function StatusPage() {
     const interval = setInterval(fetchStatus, 10000);
     return () => clearInterval(interval);
   }, [fetchStatus, autoRefresh]);
+
+  const testService = async (service: 'kimi' | 'claude' | 'ollama' | 'indexer' | 'mcp') => {
+    setTestingService(service);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/system-status`, { method: 'GET' });
+      const data = await res.json();
+      setStatus(data);
+      const svc = data[service];
+      if (svc?.status === 'connected' || svc?.status === 'running' || svc?.status === 'ok') {
+        toast.success(`${service} is online (${svc.latencyMs}ms)`);
+      } else {
+        toast.error(`${service} is offline: ${svc?.error || 'Unknown error'}`);
+      }
+    } catch (err: any) {
+      toast.error(`Test failed: ${err.message}`);
+    } finally {
+      setTestingService(null);
+    }
+  };
+
+  // Build latency history per service from connection hook
+  const serviceLatencyHistory = (serviceKey: string) => {
+    // The connection hook only tracks backend health, not individual services.
+    // For now we use a simple derived history from checkHistory.
+    return [];
+  };
 
   if (loading) {
     return (
@@ -261,7 +370,7 @@ export default function StatusPage() {
   return (
     <div className="space-y-6 max-w-5xl">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
             <Activity className="w-5 h-5" />
@@ -272,6 +381,14 @@ export default function StatusPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowHistory((s) => !s)}
+          >
+            <History className="w-3.5 h-3.5 mr-1.5" />
+            History
+          </Button>
           <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
             <input
               type="checkbox"
@@ -287,6 +404,67 @@ export default function StatusPage() {
           </Button>
         </div>
       </div>
+
+      {/* Connection History Panel */}
+      {showHistory && (
+        <Card className="border-border/60">
+          <CardHeader className="pb-2">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="w-4 h-4 text-muted-foreground" />
+              <h3 className="font-medium text-sm">Connection History</h3>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="max-h-64 overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-muted-foreground border-b border-border">
+                    <th className="text-left py-1 px-2">Time</th>
+                    <th className="text-left py-1 px-2">Overall</th>
+                    <th className="text-left py-1 px-2">Kimi</th>
+                    <th className="text-left py-1 px-2">Claude</th>
+                    <th className="text-left py-1 px-2">Ollama</th>
+                    <th className="text-left py-1 px-2">Indexer</th>
+                    <th className="text-left py-1 px-2">MCP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {checkHistory.slice(0, 20).map((item, i) => (
+                    <tr key={i} className="border-b border-border/40 last:border-0">
+                      <td className="py-1 px-2 text-muted-foreground">{new Date(item.time).toLocaleTimeString()}</td>
+                      <td className="py-1 px-2">
+                        <Badge variant="outline" className={cn(
+                          'text-[10px]',
+                          item.overall === 'healthy' && 'text-emerald-600 border-emerald-200',
+                          item.overall === 'degraded' && 'text-amber-600 border-amber-200',
+                          item.overall === 'critical' && 'text-red-600 border-red-200',
+                        )}>
+                          {item.overall}
+                        </Badge>
+                      </td>
+                      {(['kimi', 'claude', 'ollama', 'indexer', 'mcp'] as const).map((svc) => (
+                        <td key={svc} className="py-1 px-2">
+                          <span className={cn(
+                            'inline-block w-2 h-2 rounded-full',
+                            item[svc] === 'connected' || item[svc] === 'running' || item[svc] === 'ok'
+                              ? 'bg-emerald-500'
+                              : item[svc] === 'idle' || item[svc] === 'degraded'
+                              ? 'bg-amber-500'
+                              : 'bg-red-500'
+                          )} />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {checkHistory.length === 0 && (
+                <p className="text-xs text-muted-foreground py-4 text-center">No history yet. Run a check to start tracking.</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Overall Health */}
       <Card className={cn('border', overallColor)}>
@@ -330,6 +508,8 @@ export default function StatusPage() {
               ...(status.kimi.httpStatus ? [{ label: 'HTTP', value: status.kimi.httpStatus }] : []),
             ]}
             error={status.kimi.error}
+            onTest={() => testService('kimi')}
+            testing={testingService === 'kimi'}
           />
           <ServiceCard
             icon={Brain}
@@ -343,6 +523,8 @@ export default function StatusPage() {
               ...(status.claude.httpStatus ? [{ label: 'HTTP', value: status.claude.httpStatus }] : []),
             ]}
             error={status.claude.error}
+            onTest={() => testService('claude')}
+            testing={testingService === 'claude'}
           />
         </div>
       </div>
@@ -361,6 +543,8 @@ export default function StatusPage() {
               { label: 'Models', value: status.ollama.modelCount ?? '—' },
             ]}
             error={status.ollama.error}
+            onTest={() => testService('ollama')}
+            testing={testingService === 'ollama'}
           >
             {status.ollama.models && status.ollama.models.length > 0 && (
               <div className="flex flex-wrap gap-1">
@@ -379,6 +563,8 @@ export default function StatusPage() {
             status={status.indexer.status}
             latency={status.indexer.latencyMs}
             error={status.indexer.error}
+            onTest={() => testService('indexer')}
+            testing={testingService === 'indexer'}
           />
           <ServiceCard
             icon={Gamepad2}
@@ -391,6 +577,8 @@ export default function StatusPage() {
               { label: 'Scripts', value: status.mcp.scriptCount ?? '—' },
             ]}
             error={status.mcp.error}
+            onTest={() => testService('mcp')}
+            testing={testingService === 'mcp'}
           />
         </div>
       </div>
