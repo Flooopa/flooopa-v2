@@ -26,9 +26,12 @@ import {
   Layers,
   MemoryStick,
   Package,
+  Globe,
+  Save,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
@@ -141,6 +144,83 @@ interface CheckHistoryItem {
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_AI_GATEWAY_URL || '';
 
+function LocalTunnelForm({ onUpdate }: { onUpdate: () => void }) {
+  const [config, setConfig] = useState<{ ollama: string | null; indexer: string | null; lastUpdated: string | null } | null>(null);
+  const [indexerUrl, setIndexerUrl] = useState('');
+  const [ollamaUrl, setOllamaUrl] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetch(`${BACKEND_URL}/api/config/local-services`)
+      .then((r) => r.json())
+      .then((data) => {
+        setConfig(data);
+        setIndexerUrl(data.indexer || '');
+        setOllamaUrl(data.ollama || '');
+      })
+      .catch(() => {});
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/config/local-services`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          indexer: indexerUrl.trim() || null,
+          ollama: ollamaUrl.trim() || null,
+        }),
+      });
+      if (!res.ok) throw new Error('Save failed');
+      const data = await res.json();
+      setConfig(data);
+      toast.success('Tunnel URLs saved');
+      onUpdate();
+    } catch {
+      toast.error('Failed to save tunnel URLs');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground uppercase tracking-wider">Indexer ngrok URL</label>
+          <Input
+            placeholder="https://abc123.ngrok.io"
+            value={indexerUrl}
+            onChange={(e) => setIndexerUrl(e.target.value)}
+            className="text-sm"
+          />
+          <p className="text-[10px] text-muted-foreground">Points to localhost:3002 on your PC</p>
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground uppercase tracking-wider">Ollama ngrok URL</label>
+          <Input
+            placeholder="https://xyz789.ngrok.io"
+            value={ollamaUrl}
+            onChange={(e) => setOllamaUrl(e.target.value)}
+            className="text-sm"
+          />
+          <p className="text-[10px] text-muted-foreground">Points to localhost:11434 on your PC</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-3">
+        <Button variant="outline" size="sm" onClick={save} disabled={saving}>
+          {saving ? <Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> : <Save className="w-3 h-3 mr-1.5" />}
+          Save
+        </Button>
+        {config?.lastUpdated && (
+          <span className="text-xs text-muted-foreground">Last updated {new Date(config.lastUpdated).toLocaleString()}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function formatDuration(seconds: number) {
   const hrs = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
@@ -151,12 +231,13 @@ function formatDuration(seconds: number) {
 function StatusBadge({ status, latency, neutral }: { status: string; latency?: number; neutral?: boolean }) {
   const isOk = status === 'connected' || status === 'running' || status === 'healthy' || status === 'ok';
   const isWarn = status === 'error' || status === 'idle' || status === 'degraded';
-  if (neutral) {
+  const isNotConfigured = status === 'not_configured' || status === 'not_available';
+  if (neutral || isNotConfigured) {
     return (
       <div className="flex items-center gap-2">
         <span className="relative flex h-2 w-2 rounded-full bg-slate-300" />
         <Badge variant="outline" className="text-xs text-slate-500 border-slate-200 bg-slate-50">
-          Not available
+          {isNotConfigured ? 'Not configured' : 'Not available'}
         </Badge>
       </div>
     );
@@ -181,7 +262,7 @@ function StatusBadge({ status, latency, neutral }: { status: string; latency?: n
       >
         {status}
       </Badge>
-      {typeof latency === 'number' && <span className="text-xs text-muted-foreground">{latency}ms</span>}
+      {typeof latency === 'number' && latency > 0 && <span className="text-xs text-muted-foreground">{latency}ms</span>}
     </div>
   );
 }
@@ -511,6 +592,24 @@ export default function StatusPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Local Tunnel Config */}
+      <Card className="border-border/60">
+        <CardHeader className="pb-2">
+          <div className="flex items-center gap-2">
+            <Globe className="w-4 h-4 text-muted-foreground" />
+            <h3 className="font-medium text-sm">Local Tunnels</h3>
+            <Badge variant="outline" className="text-[10px] text-slate-500 border-slate-200">ngrok</Badge>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            When your PC is on, expose local services via ngrok so the cloud backend can reach them.
+            When your PC is off, the pipeline falls back to Kimi + Claude only.
+          </p>
+        </CardHeader>
+        <CardContent className="pt-0 space-y-3">
+          <LocalTunnelForm onUpdate={fetchStatus} />
+        </CardContent>
+      </Card>
 
       {/* Overall Health */}
       <Card className={cn('border', overallColor)}>
