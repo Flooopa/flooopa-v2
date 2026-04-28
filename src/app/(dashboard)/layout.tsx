@@ -18,6 +18,7 @@ import {
   ChevronRight,
   Users,
   Terminal,
+  Database,
 } from 'lucide-react';
 import { UserButton } from '@clerk/nextjs';
 import { useTheme } from '@/components/ThemeProvider';
@@ -29,6 +30,7 @@ const navItems = [
   { href: '/board', label: 'Board', icon: ClipboardList },
   { href: '/feed', label: 'Feed', icon: MessageSquare },
   { href: '/memory', label: 'Memory', icon: Brain },
+  { href: '/context', label: 'Context', icon: Database },
   { href: '/workspace', label: 'Workspace', icon: Users },
   { href: '/logs', label: 'Logs', icon: Terminal },
   { href: '/api-config', label: 'API Config', icon: Plug },
