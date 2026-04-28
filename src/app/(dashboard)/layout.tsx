@@ -24,13 +24,19 @@ import {
   AlertTriangle,
   Volume2,
   VolumeX,
+  Loader2,
+  CheckCircle2,
+  XCircle as XIcon,
+  ListTodo,
 } from 'lucide-react';
 import { UserButton } from '@clerk/nextjs';
 import { useTheme } from '@/components/ThemeProvider';
 import { RealtimeProvider } from '@/components/RealtimeProvider';
+import { TaskManagerProvider, useTaskManager } from '@/components/TaskManager';
 import { useConnection } from '@/hooks/useConnection';
 import { useSound } from '@/hooks/useSound';
 import { cn } from '@/lib/utils';
+import { Badge } from '@/components/ui/badge';
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -85,7 +91,44 @@ function ConnectionDot() {
   );
 }
 
-export default function DashboardLayout({
+function TaskIndicator() {
+  const { tasks, activeTaskId } = useTaskManager();
+  const running = tasks.filter((t) => t.status === 'running').length;
+  const completed = tasks.filter((t) => t.status === 'completed').length;
+  const failed = tasks.filter((t) => t.status === 'failed').length;
+
+  if (running === 0 && completed === 0 && failed === 0) return null;
+
+  return (
+    <Link
+      href="/"
+      className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-md bg-primary/5 hover:bg-primary/10 transition-colors"
+      title="View tasks on Dashboard"
+    >
+      <ListTodo className="w-3.5 h-3.5 text-primary" />
+      {running > 0 && (
+        <span className="flex items-center gap-1">
+          <Loader2 className="w-3 h-3 animate-spin text-primary" />
+          {running}
+        </span>
+      )}
+      {completed > 0 && (
+        <span className="flex items-center gap-1 text-emerald-600">
+          <CheckCircle2 className="w-3 h-3" />
+          {completed}
+        </span>
+      )}
+      {failed > 0 && (
+        <span className="flex items-center gap-1 text-red-500">
+          <XIcon className="w-3 h-3" />
+          {failed}
+        </span>
+      )}
+    </Link>
+  );
+}
+
+function LayoutInner({
   children,
 }: {
   children: React.ReactNode;
@@ -205,6 +248,9 @@ export default function DashboardLayout({
 
           <div className="flex-1" />
 
+          {/* Task indicator */}
+          <TaskIndicator />
+
           {/* Connection status */}
           <ConnectionDot />
         </header>
@@ -217,5 +263,17 @@ export default function DashboardLayout({
         </main>
       </div>
     </div>
+  );
+}
+
+export default function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <TaskManagerProvider>
+      <LayoutInner>{children}</LayoutInner>
+    </TaskManagerProvider>
   );
 }

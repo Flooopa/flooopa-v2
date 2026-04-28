@@ -1,12 +1,11 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Send,
   Sparkles,
   Zap,
   Loader2,
-  Moon,
   Brain,
   Flame,
   Terminal,
@@ -20,12 +19,13 @@ import {
   WifiOff,
   X,
   History,
-  Lightbulb,
   Expand,
   Shrink,
   Download,
   Type,
   ZapOff,
+  ListTodo,
+  Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -43,6 +43,7 @@ import {
 import { toast } from 'sonner';
 import { useConnection } from '@/hooks/useConnection';
 import { useSound } from '@/hooks/useSound';
+import { useTaskManager } from '@/components/TaskManager';
 
 const MODES = [
   { id: 'code', label: 'Code', icon: Zap, desc: 'Coding tasks → Kimi primary', color: 'text-amber-500' },
@@ -65,79 +66,30 @@ const AGENT_META: Record<string, { emoji: string; color: string; bg: string; bor
   claude: { emoji: '⚡', color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-200' },
 };
 
-interface AgentState {
-  status: string;
-  output: string;
-  role: string;
-}
-
-interface LogEntry {
-  id: string;
-  taskId: string;
-  event: string;
-  agent?: string;
-  role?: string;
-  message?: string;
-  error?: string;
-  confidence?: number;
-  round?: number;
-  timestamp: string;
-}
-
-interface TaskHistoryItem {
-  id: string;
-  task: string;
-  mode: string;
-  timestamp: string;
-  success: boolean;
-}
-
-function useTaskHistory() {
-  const [history, setHistory] = useState<TaskHistoryItem[]>(() => {
-    if (typeof window === 'undefined') return [];
-    try {
-      return JSON.parse(localStorage.getItem('ai-task-history') || '[]');
-    } catch { return []; }
-  });
-
-  const add = useCallback((item: TaskHistoryItem) => {
-    setHistory((prev) => {
-      const next = [item, ...prev].slice(0, 50);
-      localStorage.setItem('ai-task-history', JSON.stringify(next));
-      return next;
-    });
-  }, []);
-
-  const clear = useCallback(() => {
-    setHistory([]);
-    localStorage.removeItem('ai-task-history');
-  }, []);
-
-  return { history, add, clear };
-}
+const stepLabels = ['Idle', 'Solver', 'Critic', 'Synthesis', 'Complete'];
+const stepDescriptions = [
+  'Waiting for input',
+  'Primary AI is solving...',
+  'Secondary AI is reviewing...',
+  'Merging best ideas...',
+  'Done!',
+];
 
 export default function DashboardPage() {
   const [task, setTask] = useState('');
   const [mode, setMode] = useState('code');
   const [planningMode, setPlanningMode] = useState(false);
   const [primaryOverride, setPrimaryOverride] = useState<'auto' | 'kimi' | 'claude'>('auto');
-  const [loading, setLoading] = useState(false);
-  const [agents, setAgents] = useState<Record<string, AgentState>>({});
-  const [finalOutput, setFinalOutput] = useState('');
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [currentStep, setCurrentStep] = useState(0);
-  const [confidence, setConfidence] = useState<number | null>(null);
-  const [lastError, setLastError] = useState<string | null>(null);
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
-  const [retryCount, setRetryCount] = useState(0);
-  const [abortController, setAbortController] = useState<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
   const { state: connectionState, isOnline } = useConnection();
   const { play: playSound } = useSound();
-  const { history: taskHistory, add: addToHistory, clear: clearHistory } = useTaskHistory();
+  const { tasks, activeTaskId, startTask, cancelTask, clearCompleted } = useTaskManager();
 
   const isBackendDown = connectionState === 'disconnected';
   const isDegraded = connectionState === 'degraded';
@@ -152,10 +104,17 @@ export default function DashboardPage() {
     localStorage.setItem('ai-orchestrator-task-draft', task);
   }, [task]);
 
+  // Auto-select latest running or completed task
+  useEffect(() => {
+    if (selectedTaskId) return;
+    const latest = [...tasks].reverse().find((t) => t.status === 'running' || t.status === 'completed');
+    if (latest) setSelectedTaskId(latest.taskId);
+  }, [tasks, selectedTaskId]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'Enter' && task.trim() && !loading) {
+      if (e.ctrlKey && e.key === 'Enter' && task.trim() && !activeTaskId) {
         e.preventDefault();
         handleOrchestrate();
       }
@@ -177,241 +136,30 @@ export default function DashboardPage() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [task, loading]);
+  }, [task, activeTaskId]);
 
-  const addLog = useCallback((entry: Omit<LogEntry, 'id' | 'timestamp'>) => {
-    const log: LogEntry = { id: Math.random().toString(36).slice(2), timestamp: new Date().toISOString(), ...entry };
-    setLogs((prev) => {
-      const next = [...prev, log];
-      localStorage.setItem('ai-orchestrator-logs', JSON.stringify(next));
-      return next;
-    });
-    return log;
-  }, []);
-
-  const determineStep = (role?: string, event?: string) => {
-    if (event === 'pipeline_complete') return 4;
-    if (role === 'synthesizer' || role === 'final-merger') return 3;
-    if (role === 'critic' || role === 'devil' || role === 'reviewer') return 2;
-    if (role === 'solver' || role === 'architect' || role === 'reviser') return 1;
-    return 0;
-  };
-
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-  const connectStream = useCallback(async (streamUrl: string, taskId: string, signal: AbortSignal) => {
-    let reconnectAttempts = 0;
-    const maxReconnects = 5;
-
-    while (reconnectAttempts <= maxReconnects) {
-      try {
-        const streamRes = await fetch(streamUrl, { signal });
-        if (!streamRes.ok) throw new Error(`Stream HTTP ${streamRes.status}`);
-
-        const reader = streamRes.body?.getReader();
-        if (!reader) throw new Error('No reader available');
-
-        const decoder = new TextDecoder();
-        let buffer = '';
-        reconnectAttempts = 0; // reset on successful connection
-
-        while (true) {
-          if (signal.aborted) return;
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const event = JSON.parse(line.slice(6));
-                if (event.event === 'heartbeat') continue;
-
-                switch (event.event) {
-                  case 'agent_start': {
-                    setAgents((prev) => ({
-                      ...prev,
-                      [event.data.agent]: { status: 'thinking', output: '', role: event.data.role },
-                    }));
-                    addLog({ taskId: event.data.taskId, event: 'agent_start', agent: event.data.agent, role: event.data.role, message: event.data.message });
-                    setCurrentStep(determineStep(event.data.role));
-                    break;
-                  }
-                  case 'agent_stream': {
-                    setAgents((prev) => ({
-                      ...prev,
-                      [event.data.agent]: {
-                        ...prev[event.data.agent],
-                        status: 'streaming',
-                        output: event.data.fullText || '',
-                      },
-                    }));
-                    break;
-                  }
-                  case 'agent_complete': {
-                    setAgents((prev) => ({
-                      ...prev,
-                      [event.data.agent]: {
-                        ...prev[event.data.agent],
-                        status: 'complete',
-                        output: event.data.fullText || '',
-                      },
-                    }));
-                    addLog({ taskId: event.data.taskId, event: 'agent_complete', agent: event.data.agent, role: event.data.role, message: `Completed (${event.data.charCount} chars)` });
-                    toast.success(`${event.data.agent === 'kimi' ? 'Kimi' : 'Claude'} completed as ${event.data.role}`);
-                    break;
-                  }
-                  case 'confidence_update': {
-                    setConfidence(event.data.confidence);
-                    addLog({ taskId: event.data.taskId, event: 'confidence_update', confidence: event.data.confidence, round: event.data.round });
-                    break;
-                  }
-                  case 'final_output': {
-                    setFinalOutput(event.data.output || '');
-                    setCurrentStep(4);
-                    addLog({ taskId: event.data.taskId, event: 'final_output', message: 'Pipeline complete' });
-                    playSound('complete');
-                    toast.success('Pipeline complete!');
-                    return; // done
-                  }
-                  case 'error': {
-                    addLog({ taskId: event.data.taskId, event: 'error', agent: event.data.agent, role: event.data.role, error: event.data.error });
-                    toast.error(`${event.data.agent || 'System'} error: ${event.data.error?.slice(0, 80)}`);
-                    setLastError(event.data.error);
-                    break;
-                  }
-                  case 'warning': {
-                    addLog({ taskId: event.data.taskId, event: 'warning', agent: event.data.agent, role: event.data.role, message: event.data.message });
-                    toast.warning(event.data.message);
-                    break;
-                  }
-                  case 'pipeline_complete': {
-                    addLog({ taskId: event.data.taskId, event: 'pipeline_complete', message: event.data.message });
-                    break;
-                  }
-                }
-              } catch {
-                // Skip malformed events
-              }
-            }
-          }
-        }
-
-        // Stream ended normally
-        return;
-      } catch (err: any) {
-        if (signal.aborted) return;
-        reconnectAttempts++;
-        if (reconnectAttempts > maxReconnects) {
-          throw new Error(`Stream disconnected after ${maxReconnects} reconnection attempts`);
-        }
-        const backoff = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
-        toast.info(`Reconnecting stream... (${reconnectAttempts}/${maxReconnects})`);
-        await sleep(backoff);
-      }
-    }
-  }, [addLog, playSound]);
+  const selectedTask = tasks.find((t) => t.taskId === selectedTaskId);
+  const loading = !!activeTaskId;
 
   const handleOrchestrate = async () => {
     if (!task.trim() || loading) return;
-
-    // Pre-flight: check backend
     if (isBackendDown) {
       toast.error('Backend is unreachable. Check Status page for details.');
       return;
     }
-
-    setLoading(true);
-    setAgents({});
-    setFinalOutput('');
-    setLogs([]);
-    setCurrentStep(0);
-    setConfidence(null);
-    setLastError(null);
-    setRetryCount(0);
-
-    const ctrl = new AbortController();
-    setAbortController(ctrl);
-
-    const taskItem: TaskHistoryItem = {
-      id: Math.random().toString(36).slice(2),
-      task: task.trim(),
-      mode,
-      timestamp: new Date().toISOString(),
-      success: false,
-    };
-
     toast.info('Orchestration started...', { duration: 3000 });
-
-    const attempt = async (attemptNum: number): Promise<void> => {
-      try {
-        const startRes = await fetch('/api/orchestrate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ task, mode, planningMode, primaryOverride }),
-          signal: ctrl.signal,
-        });
-
-        if (!startRes.ok) {
-          const errText = await startRes.text();
-          throw new Error(`HTTP ${startRes.status}: ${errText}`);
-        }
-
-        const { taskId, streamUrl } = await startRes.json();
-        if (!taskId || !streamUrl) throw new Error('No taskId or streamUrl returned');
-
-        taskItem.id = taskId;
-        await connectStream(streamUrl, taskId, ctrl.signal);
-        taskItem.success = true;
-      } catch (err: any) {
-        if (ctrl.signal.aborted) {
-          toast.info('Orchestration cancelled');
-          return;
-        }
-        console.error('[ORCH] FAILED (attempt ' + attemptNum + '):', err);
-        setLastError(err.message);
-
-        if (attemptNum < 3) {
-          const backoff = Math.min(1000 * Math.pow(2, attemptNum), 8000);
-          setRetryCount(attemptNum);
-          toast.warning(`Retrying in ${backoff}ms... (${attemptNum}/3)`);
-          await sleep(backoff);
-          return attempt(attemptNum + 1);
-        }
-
-        playSound('error');
-        toast.error(`Orchestration failed: ${err.message?.slice(0, 100)}`);
-        taskItem.success = false;
-      }
-    };
-
-    await attempt(1);
-    addToHistory(taskItem);
-    setLoading(false);
-    setAbortController(null);
+    await startTask({ task, mode, planningMode, primaryOverride });
   };
 
-  const handleCancel = () => {
-    if (abortController) {
-      abortController.abort();
-      setAbortController(null);
-    }
-  };
-
-  const copyOutput = async () => {
-    if (!finalOutput) return;
-    await navigator.clipboard.writeText(finalOutput);
+  const copyOutput = async (text: string) => {
+    await navigator.clipboard.writeText(text);
     setCopied(true);
     toast.success('Copied to clipboard');
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const exportOutput = () => {
-    if (!finalOutput) return;
-    const blob = new Blob([finalOutput], { type: 'text/markdown' });
+  const exportOutput = (text: string) => {
+    const blob = new Blob([text], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -425,22 +173,6 @@ export default function DashboardPage() {
     setTask(text);
     textareaRef.current?.focus();
   };
-
-  const loadHistoryItem = (item: TaskHistoryItem) => {
-    setTask(item.task);
-    setMode(item.mode);
-    setShowHistory(false);
-    textareaRef.current?.focus();
-  };
-
-  const stepLabels = ['Idle', 'Solver', 'Critic', 'Synthesis', 'Complete'];
-  const stepDescriptions = [
-    'Waiting for input',
-    'Primary AI is solving...',
-    'Secondary AI is reviewing...',
-    'Merging best ideas...',
-    'Done!',
-  ];
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -487,28 +219,55 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      {/* Pipeline Progress */}
-      {loading && (
+      {/* Task Selector */}
+      {tasks.length > 0 && (
+        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+          <ListTodo className="w-4 h-4 text-muted-foreground shrink-0" />
+          {tasks.slice(-10).map((t) => (
+            <button
+              key={t.taskId}
+              onClick={() => setSelectedTaskId(t.taskId)}
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors shrink-0',
+                selectedTaskId === t.taskId
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {t.status === 'running' && <Loader2 className="w-3 h-3 animate-spin" />}
+              {t.status === 'completed' && <Check className="w-3 h-3 text-emerald-500" />}
+              {t.status === 'failed' && <AlertCircle className="w-3 h-3 text-red-500" />}
+              {t.status === 'cancelled' && <X className="w-3 h-3 text-muted-foreground" />}
+              <span className="truncate max-w-[120px]">{t.task}</span>
+            </button>
+          ))}
+          <button
+            onClick={clearCompleted}
+            className="px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-red-500 shrink-0"
+            title="Clear completed tasks"
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      {/* Selected Task Progress */}
+      {selectedTask?.status === 'running' && (
         <Card className="bg-muted/30 border-border/50">
           <CardContent className="py-3">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <Loader2 className="w-4 h-4 animate-spin text-primary" />
-                <span className="text-sm font-medium">{stepLabels[currentStep]}</span>
-                {retryCount > 0 && (
-                  <Badge variant="outline" className="text-xs text-amber-600 border-amber-200">
-                    Retry {retryCount}/3
-                  </Badge>
-                )}
+                <span className="text-sm font-medium">{stepLabels[selectedTask.currentStep]}</span>
               </div>
-              <span className="text-xs text-muted-foreground">{stepDescriptions[currentStep]}</span>
+              <span className="text-xs text-muted-foreground">{stepDescriptions[selectedTask.currentStep]}</span>
             </div>
-            <Progress value={(currentStep / 4) * 100} className="h-1.5" />
-            {confidence !== null && (
+            <Progress value={(selectedTask.currentStep / 4) * 100} className="h-1.5" />
+            {selectedTask.confidence !== null && (
               <div className="flex items-center gap-2 mt-2">
                 <TrendingUp className="w-3 h-3 text-amber-500" />
-                <span className="text-xs text-muted-foreground">Confidence: {confidence}/10</span>
-                <Progress value={confidence * 10} className="h-1 w-24" />
+                <span className="text-xs text-muted-foreground">Confidence: {selectedTask.confidence}/10</span>
+                <Progress value={(selectedTask.confidence || 0) * 10} className="h-1 w-24" />
               </div>
             )}
           </CardContent>
@@ -537,7 +296,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Templates & History */}
+        {/* Templates */}
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-muted-foreground uppercase tracking-wider">Templates:</span>
           {TEMPLATES.map((t) => {
@@ -554,39 +313,6 @@ export default function DashboardPage() {
               </button>
             );
           })}
-          <div className="relative">
-            <button
-              onClick={() => setShowHistory((s) => !s)}
-              disabled={taskHistory.length === 0 || loading}
-              className="flex items-center gap-1 px-2 py-1 rounded-md text-xs bg-muted hover:bg-muted/80 transition-colors disabled:opacity-50"
-            >
-              <History className="w-3 h-3" />
-              History ({taskHistory.length})
-            </button>
-            {showHistory && (
-              <div className="absolute top-full left-0 mt-1 w-80 bg-card border border-border rounded-md shadow-lg z-50 p-2 space-y-1">
-                <div className="flex items-center justify-between px-2">
-                  <span className="text-xs font-medium">Recent Tasks</span>
-                  <button onClick={clearHistory} className="text-xs text-red-500 hover:text-red-600">Clear</button>
-                </div>
-                {taskHistory.slice(0, 10).map((item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => loadHistoryItem(item)}
-                    className="w-full text-left px-2 py-1.5 rounded-md hover:bg-muted text-xs truncate flex items-center gap-2"
-                  >
-                    {item.success ? (
-                      <Check className="w-3 h-3 text-emerald-500 shrink-0" />
-                    ) : (
-                      <AlertCircle className="w-3 h-3 text-red-500 shrink-0" />
-                    )}
-                    <span className="truncate flex-1">{item.task}</span>
-                    <Badge variant="outline" className="text-[10px] shrink-0">{item.mode}</Badge>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -646,13 +372,13 @@ export default function DashboardPage() {
             {loading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}
             {loading ? 'Orchestrating...' : 'Orchestrate'}
           </Button>
-          {loading && (
-            <Button variant="outline" size="sm" onClick={handleCancel}>
+          {selectedTask?.status === 'running' && (
+            <Button variant="outline" size="sm" onClick={() => cancelTask(selectedTask.taskId)}>
               <X className="w-3.5 h-3.5 mr-1.5" />
               Cancel
             </Button>
           )}
-          {lastError && !loading && (
+          {selectedTask?.status === 'failed' && (
             <Button variant="outline" size="sm" onClick={handleOrchestrate} disabled={loading || isBackendDown || !isOnline}>
               <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
               Retry
@@ -661,26 +387,23 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Error State */}
-      {lastError && !loading && (
+      {/* Selected Task Error */}
+      {selectedTask?.lastError && selectedTask.status === 'failed' && (
         <Card className="border-red-200 bg-red-50">
           <CardContent className="py-3 flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-red-700">Orchestration failed</p>
-              <p className="text-xs text-red-600 mt-1 break-words">{lastError}</p>
-              {retryCount > 0 && (
-                <p className="text-xs text-red-500 mt-1">Failed after {retryCount} retry attempts</p>
-              )}
+              <p className="text-xs text-red-600 mt-1 break-words">{selectedTask.lastError}</p>
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* Agent Cards */}
-      {Object.keys(agents).length > 0 && (
+      {/* Selected Task Agent Cards */}
+      {selectedTask && Object.keys(selectedTask.agents).length > 0 && (
         <div className="grid gap-4 md:grid-cols-2">
-          {Object.entries(agents).map(([key, agent]) => {
+          {Object.entries(selectedTask.agents).map(([key, agent]) => {
             const meta = AGENT_META[key] || { emoji: '🤖', color: 'text-gray-600', bg: 'bg-gray-50', border: 'border-gray-200' };
             const isExpanded = expandedAgent === key;
             return (
@@ -748,14 +471,14 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Live Logs Panel */}
-      {logs.length > 0 && (
+      {/* Selected Task Logs */}
+      {selectedTask && selectedTask.logs.length > 0 && (
         <Card className="border-border/60">
           <CardHeader className="pb-2 cursor-pointer" onClick={() => setShowLogs((s) => !s)}>
             <div className="flex items-center justify-between">
               <h3 className="font-medium text-sm flex items-center gap-2">
                 <Terminal className="w-4 h-4 text-muted-foreground" />
-                Live Logs ({logs.length})
+                Live Logs ({selectedTask.logs.length})
               </h3>
               <span className="text-xs text-muted-foreground">{showLogs ? 'Hide' : 'Show'} (Ctrl+L)</span>
             </div>
@@ -763,7 +486,7 @@ export default function DashboardPage() {
           {showLogs && (
             <CardContent className="pt-0">
               <div className="max-h-64 overflow-y-auto space-y-1 text-xs font-mono">
-                {logs.map((log) => (
+                {selectedTask.logs.map((log) => (
                   <div key={log.id} className="flex items-start gap-2 py-1 border-b border-border/40 last:border-0">
                     <span className="text-muted-foreground shrink-0">{new Date(log.timestamp).toLocaleTimeString()}</span>
                     <span className={log.event === 'error' ? 'text-red-600' : log.event === 'agent_complete' ? 'text-emerald-600' : 'text-foreground'}>
@@ -787,8 +510,8 @@ export default function DashboardPage() {
         </Card>
       )}
 
-      {/* Final Output */}
-      {finalOutput && (
+      {/* Selected Task Final Output */}
+      {selectedTask?.finalOutput && (
         <Card className="border-emerald-500/30">
           <CardHeader className="pb-2 flex flex-row items-center justify-between">
             <h3 className="font-medium text-sm flex items-center gap-2">
@@ -796,18 +519,18 @@ export default function DashboardPage() {
               Final Output
             </h3>
             <div className="flex items-center gap-1">
-              <Button variant="ghost" size="sm" className="h-7 px-2" onClick={exportOutput}>
+              <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => exportOutput(selectedTask.finalOutput)}>
                 <Download className="w-3.5 h-3.5 mr-1" />
                 Export
               </Button>
-              <Button variant="ghost" size="sm" className="h-7 px-2" onClick={copyOutput}>
+              <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => copyOutput(selectedTask.finalOutput)}>
                 {copied ? <Check className="w-3.5 h-3.5 mr-1" /> : <Copy className="w-3.5 h-3.5 mr-1" />}
                 {copied ? 'Copied' : 'Copy'}
               </Button>
             </div>
           </CardHeader>
           <CardContent>
-            <pre className="text-sm whitespace-pre-wrap text-muted-foreground font-mono text-xs leading-relaxed">{finalOutput}</pre>
+            <pre className="text-sm whitespace-pre-wrap text-muted-foreground font-mono text-xs leading-relaxed">{selectedTask.finalOutput}</pre>
           </CardContent>
         </Card>
       )}
